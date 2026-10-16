@@ -21,7 +21,7 @@ set ::next_id 1
 set ::DEFAULT_DOWNLOAD_CMD "yt-dlp_linux --cookies-from-browser vivaldi --js-runtime node -P <target_dir> <url>"
 set ::download_cmd $::DEFAULT_DOWNLOAD_CMD
 set ::target_dir   [file join $env(HOME) Videos]  ;# output directory for downloads
-set ::version "0.3.0"
+set ::version "0.3.1"
 set ::active_pipe ""     ;# channel of currently running subprocess
 set ::active_id  ""      ;# id of currently downloading item
 
