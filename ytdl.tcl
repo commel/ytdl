@@ -8,7 +8,7 @@ package require Tk
 # Configuration / Persistence paths
 # ---------------------------------------------------------------------------
 set SCRIPT_DIR  [file dirname [file normalize [info script]]]
-set CONFIG_FILE [file join $SCRIPT_DIR ytdl.conf]
+set CONFIG_FILE [file join $SCRIPT_DIR ytdl.ini]
 set QUEUE_FILE  [file join $env(HOME) .ytdl_queue]
 
 # ---------------------------------------------------------------------------
@@ -18,8 +18,10 @@ set QUEUE_FILE  [file join $env(HOME) .ytdl_queue]
 #   status: pending | downloading | done | error
 set ::queue {}
 set ::next_id 1
-set ::download_cmd "yt"
-set ::dest_dir     [file join $env(HOME) Videos]  ;# output directory for downloads
+set ::DEFAULT_DOWNLOAD_CMD "yt-dlp_linux --cookies-from-browser vivaldi --js-runtime node -P <target_dir> <url>"
+set ::download_cmd $::DEFAULT_DOWNLOAD_CMD
+set ::target_dir   [file join $env(HOME) Videos]  ;# output directory for downloads
+set ::version "0.3"
 set ::active_pipe ""     ;# channel of currently running subprocess
 set ::active_id  ""      ;# id of currently downloading item
 
@@ -28,22 +30,32 @@ set ::active_id  ""      ;# id of currently downloading item
 # ---------------------------------------------------------------------------
 proc config_save {} {
     set fd [open $::CONFIG_FILE w]
-    puts $fd [list cmd $::download_cmd destdir $::dest_dir]
+    puts $fd "cmd=$::download_cmd"
+    puts $fd "target_dir=$::target_dir"
     close $fd
+    ui_show_saved_notice
+}
+
+proc ui_show_saved_notice {} {
+    if {![info exists ::W(statussaved)]} return
+    $::W(statussaved) configure -text "configuration saved..."
+    after 3000 { $::W(statussaved) configure -text "" }
 }
 
 proc config_load {} {
     if {![file exists $::CONFIG_FILE]} return
     set fd [open $::CONFIG_FILE r]
-    set data [read $fd]
+    while {[gets $fd line] >= 0} {
+        set line [string trim $line]
+        if {$line eq "" || [string match "#*" $line]} continue
+        if {[regexp {^([^=]+)=(.*)$} $line -> key val]} {
+            switch $key {
+                cmd        { set ::download_cmd $val }
+                target_dir { set ::target_dir $val }
+            }
+        }
+    }
     close $fd
-    array set cfg $data
-    if {[info exists cfg(cmd)]} {
-        set ::download_cmd $cfg(cmd)
-    }
-    if {[info exists cfg(destdir)]} {
-        set ::dest_dir $cfg(destdir)
-    }
 }
 
 proc queue_save {} {
@@ -176,7 +188,13 @@ proc worker_start {id url} {
     ui_queue_refresh
     ui_output_show $id
 
-    set cmd "$::download_cmd -P [list $::dest_dir] [list $url]"
+    # Build the command: substitute <url> and <directory> placeholders.
+    # If neither is present, fall back to the legacy "-P <dir> <url>" convention.
+    if {[string first "<url>" $::download_cmd] >= 0 || [string first "<target_dir>" $::download_cmd] >= 0} {
+        set cmd [string map [list "<url>" [list $url] "<target_dir>" [list $::target_dir]] $::download_cmd]
+    } else {
+        set cmd "$::download_cmd -P [list $::target_dir] [list $url]"
+    }
     if {[catch {open "|$cmd 2>@1" r} pipe]} {
         # Command not found or other launch error
         queue_update $id status error output "Failed to start: $pipe"
@@ -333,6 +351,12 @@ proc ui_on_queue_select {args} {
     ui_output_show [dict get $item id]
 }
 
+proc ui_reset_cmd {} {
+    set ::download_cmd $::DEFAULT_DOWNLOAD_CMD
+    $::W(cmd_entry) delete 0 end
+    $::W(cmd_entry) insert 0 $::download_cmd
+}
+
 proc ui_add_url {} {
     set url [string trim [$::W(url_entry) get]]
     if {$url eq ""} return
@@ -340,28 +364,28 @@ proc ui_add_url {} {
     $::W(url_entry) delete 0 end
 }
 
-proc ui_save_cmd {} {
-    set cmd [string trim [$::W(cmd_entry) get]]
-    if {$cmd eq ""} return
-    set ::download_cmd $cmd
-    config_save
-}
-
 proc ui_browse_dir {} {
     set chosen [tk_chooseDirectory \
         -title "Choose output directory" \
-        -initialdir $::dest_dir]
+        -initialdir $::target_dir]
     if {$chosen eq ""} return
-    set ::dest_dir $chosen
+    set ::target_dir $chosen
     $::W(dir_entry) delete 0 end
     $::W(dir_entry) insert 0 $chosen
+    set cmd [string trim [$::W(cmd_entry) get]]
+    if {$cmd ne ""} { set ::download_cmd $cmd }
     config_save
+}
+
+proc ui_open_target_dir {} {
+    exec xdg-open $::target_dir &
 }
 
 proc ui_save_dir {} {
     set dir [string trim [$::W(dir_entry) get]]
-    if {$dir eq ""} return
-    set ::dest_dir $dir
+    if {$dir ne ""} { set ::target_dir $dir }
+    set cmd [string trim [$::W(cmd_entry) get]]
+    if {$cmd ne ""} { set ::download_cmd $cmd }
     config_save
 }
 
@@ -394,21 +418,23 @@ proc build_ui {} {
     grid $cfg -row 1 -column 0 -sticky nsew
 
     ttk::label $cfg.lcmd -text "Command:"
-    ttk::entry $cfg.cmd  -width 20
+    ttk::entry $cfg.cmd  -width 80
     $cfg.cmd insert 0 $::download_cmd
-    ttk::button $cfg.save -text "Save" -command ui_save_cmd
+    ttk::button $cfg.resetcmd -text "Reset" -command ui_reset_cmd
 
-    grid $cfg.lcmd $cfg.cmd $cfg.save -row 0 -padx 4 -pady 2 -sticky w
+    grid $cfg.lcmd $cfg.cmd $cfg.resetcmd -row 0 -padx 4 -pady 2 -sticky w
+    grid $cfg.cmd -sticky ew
 
     set ::W(cmd_entry) $cfg.cmd
 
     ttk::label  $cfg.ldir  -text "Directory:"
     ttk::entry  $cfg.dir   -width 40
-    $cfg.dir insert 0 $::dest_dir
+    $cfg.dir insert 0 $::target_dir
     ttk::button $cfg.browse -text "Browse…" -command ui_browse_dir
-    ttk::button $cfg.savedir -text "Save"   -command ui_save_dir
+    ttk::button $cfg.open    -text "Open"    -command ui_open_target_dir
+    ttk::button $cfg.savedir -text "Save"    -command ui_save_dir
 
-    grid $cfg.ldir $cfg.dir $cfg.browse $cfg.savedir -row 1 -padx 4 -pady 2 -sticky w
+    grid $cfg.ldir $cfg.dir $cfg.browse $cfg.open $cfg.savedir -row 1 -padx 4 -pady 2 -sticky w
     grid $cfg.dir -sticky ew
     grid columnconfigure $cfg 1 -weight 1
 
@@ -484,9 +510,23 @@ proc build_ui {} {
         -anchor w \
         -padding "8 2 8 2" \
         -relief flat
-    grid .statusbar -row 4 -column 0 -sticky ew
+    ttk::frame .statusright
+    ttk::label .statusright.saved \
+        -text "" \
+        -anchor e \
+        -padding "0 2 4 2" \
+        -relief flat
+    ttk::label .statusright.ver \
+        -text "v$::version" \
+        -anchor e \
+        -padding "0 2 8 2" \
+        -relief flat
+    pack .statusright.saved .statusright.ver -side left
+    grid .statusbar    -row 4 -column 0 -sticky ew
+    grid .statusright  -row 4 -column 0 -sticky e
 
-    set ::W(statusbar) .statusbar
+    set ::W(statusbar)   .statusbar
+    set ::W(statussaved) .statusright.saved
 
     # ---- Root window weights ----
     grid columnconfigure . 0 -weight 1

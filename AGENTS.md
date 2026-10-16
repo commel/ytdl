@@ -10,8 +10,7 @@
 
 - Frontend accepts a URL and appends it to a queue.
 - Queue is worked automatically, one item at a time (serial, not parallel).
-- Each URL is passed to a configurable download command. Default: `yt`.
-- Download command is invoked as: `$cmd -P $dest_dir $url` — must accept `-P <dir>` for output path (matches `yt-dlp` convention).
+- Each URL is passed to a configurable download command.
 
 ## Architecture
 
